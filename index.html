@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>LGM Import SRL - Monitor Catálogo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .touch-target { min-height: 48px; }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen pb-12 antialiased selection:bg-yellow-400 selection:text-black">
+
+  <header class="sticky top-0 z-40 bg-[#0b0f19]/95 backdrop-blur-md border-b border-slate-800 px-4 py-3">
+    <div class="max-w-xl mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-9 h-9 rounded-xl bg-yellow-400 flex items-center justify-center font-black text-black text-lg shadow-lg shadow-yellow-400/20">
+          LGM
+        </div>
+        <div>
+          <h1 class="text-base font-bold tracking-tight text-white leading-tight">LGM Import SRL</h1>
+          <p id="sync-label" class="text-[11px] text-slate-400">Esperando...</p>
+        </div>
+      </div>
+      
+      <button onclick="fetchData()" class="touch-target px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 active:scale-95 border border-slate-700 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-all">
+        <span id="refresh-spinner" class="inline-block">🔄</span>
+        <span>Actualizar</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-xl mx-auto px-4 pt-4 space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div onclick="setFilter('lost')" id="card-lost" class="cursor-pointer bg-red-950/20 border-2 border-red-500/40 rounded-2xl p-3.5 transition-all active:scale-98">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-bold text-red-400 uppercase tracking-wider">Perdidas</span>
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span>
+        </div>
+        <div id="count-lost" class="text-3xl font-black text-red-100">-</div>
+        <p class="text-[11px] text-red-300/80 mt-0.5">Requieren ajustar precio</p>
+      </div>
+
+      <div onclick="setFilter('won')" id="card-won" class="cursor-pointer bg-slate-900 border border-slate-800 rounded-2xl p-3.5 transition-all active:scale-98">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Ganadas</span>
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+        </div>
+        <div id="count-won" class="text-3xl font-black text-emerald-100">-</div>
+        <p class="text-[11px] text-slate-400 mt-0.5">Primera opción activa</p>
+      </div>
+    </div>
+
+    <div class="space-y-2">
+      <input type="text" id="search-input" oninput="renderList()" placeholder="Buscar producto..." 
+        class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-yellow-400">
+      
+      <div class="flex space-x-2">
+        <button onclick="setFilter('lost')" id="btn-filter-lost" class="filter-tab flex-1 py-1.5 text-xs font-bold rounded-lg border bg-red-500 text-white border-red-500">Perdidas</button>
+        <button onclick="setFilter('won')" id="btn-filter-won" class="filter-tab flex-1 py-1.5 text-xs font-medium rounded-lg border bg-slate-900 text-slate-400 border-slate-800">Ganadas</button>
+        <button onclick="setFilter('all')" id="btn-filter-all" class="filter-tab flex-1 py-1.5 text-xs font-medium rounded-lg border bg-slate-900 text-slate-400 border-slate-800">Todas</button>
+      </div>
+    </div>
+
+    <div id="product-list" class="space-y-3"></div>
+  </main>
+
+  <script>
+    let currentFilter = 'lost';
+    let productsData = [];
+    const NICKNAME = 'LGMIMPORT';
+    
+    const formatPrice = (val) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(val);
+
+    async function fetchData() {
+      const syncLabel = document.getElementById('sync-label');
+      const spinner = document.getElementById('refresh-spinner');
+      spinner.classList.add('animate-spin');
+      syncLabel.innerText = "Consultando ML...";
+      productsData = []; 
+      
+      try {
+        // 1. Obtener Seller ID
+        let res = await fetch(`https://api.mercadolibre.com/sites/MLA/search?nickname=${NICKNAME}`);
+        let data = await res.json();
+        let sellerId = data.seller?.id;
+
+        if (!sellerId) {
+            let altRes = await fetch(`https://api.mercadolibre.com/sites/MLA/search?q=${NICKNAME}`);
+            let altData = await altRes.json();
+            if (altData.results && altData.results.length > 0) {
+                sellerId = altData.results[0].seller?.id;
+            }
+        }
+
+        if (!sellerId) throw new Error("No se encontró el vendedor");
+
+        // 2. Traer publicaciones
+        let itemsRes = await fetch(`https://api.mercadolibre.com/sites/MLA/search?seller_id=${sellerId}&limit=50`);
+        let itemsData = await itemsRes.json();
+        
+        let items = itemsData.results || [];
+        let catalogItems = items.filter(i => i.catalog_listing || i.catalog_product_id);
+
+        syncLabel.innerText = "Analizando precios...";
+
+        // 3. Revisar Buy Box
+        for (let item of catalogItems) {
+            let status = 'won';
+            let winnerPrice = item.price;
+            let winnerName = 'Vos';
+            
+            if (item.catalog_product_id) {
+                let catRes = await fetch(`https://api.mercadolibre.com/products/${item.catalog_product_id}`);
+                if (catRes.ok) {
+                    let catData = await catRes.json();
+                    let buyBox = catData.buy_box_winner;
+                    if (buyBox) {
+                        let winnerSellerId = buyBox.seller_id;
+                        winnerPrice = buyBox.price || item.price;
+                        
+                        if (winnerSellerId && String(winnerSellerId) !== String(sellerId)) {
+                            status = 'lost';
+                            winnerName = 'Competidor';
+                        }
+                    }
+                }
+            }
+
+            productsData.push({
+                title: item.title,
+                url: item.permalink,
+                img: item.thumbnail.replace('http://', 'https://'),
+                myPrice: item.price,
+                winnerPrice: winnerPrice,
+                winner: winnerName,
+                status: status
+            });
+        }
+
+        let now = new Date();
+        syncLabel.innerText = `Act: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+        
+      } catch (e) {
+        console.error(e);
+        syncLabel.innerText = "Error de conexión";
+      } finally {
+        spinner.classList.remove('animate-spin');
+        updateCounters();
+        renderList();
+      }
+    }
+
+    function setFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-tab').forEach(b => {
+        b.className = "filter-tab flex-1 py-1.5 text-xs font-medium rounded-lg border bg-slate-900 text-slate-400 border-slate-800";
+      });
+      const activeBtn = document.getElementById(`btn-filter-${filter}`);
+      if (activeBtn) {
+        activeBtn.className = "filter-tab flex-1 py-1.5 text-xs font-bold rounded-lg border " + 
+          (filter === 'lost' ? 'bg-red-500 text-white border-red-500' : 'bg-yellow-400 text-black border-yellow-400');
+      }
+      renderList();
+    }
+
+    function updateCounters() {
+      const lost = productsData.filter(p => p.status === 'lost').length;
+      const won = productsData.filter(p => p.status === 'won').length;
+      document.getElementById('count-lost').innerText = lost;
+      document.getElementById('count-won').innerText = won;
+    }
+
+    function renderList() {
+      const container = document.getElementById('product-list');
+      const search = document.getElementById('search-input').value.toLowerCase();
+
+      let list = productsData;
+      if (currentFilter !== 'all') {
+        list = list.filter(p => p.status === currentFilter);
+      }
+      if (search) {
+        list = list.filter(p => p.title.toLowerCase().includes(search));
+      }
+
+      container.innerHTML = '';
+
+      if (list.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-12 px-4">
+            <div class="text-4xl mb-3">✅</div>
+            <p class="text-sm font-semibold text-slate-300">Nada por aquí</p>
+          </div>
+        `;
+        return;
+      }
+
+      list.forEach(item => {
+        const isLost = item.status === 'lost';
+        const card = document.createElement('a');
+        card.href = item.url;
+        card.target = '_blank';
+        card.className = `block bg-slate-900 border ${isLost ? 'border-red-500/40 hover:border-red-400' : 'border-slate-800 hover:border-slate-700'} rounded-2xl p-3.5 transition active:scale-[0.99] relative overflow-hidden`;
+
+        card.innerHTML = `
+          <div class="flex gap-3">
+            <img src="${item.img}" class="w-16 h-16 object-contain rounded-lg bg-white p-1 flex-shrink-0" alt="img" onerror="this.src='https://placehold.co/80x80/1e293b/fff?text=ML'">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between gap-1 mb-1">
+                <span class="inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full ${isLost ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}">
+                  ${isLost ? '🔴 PERDIDA' : '🟢 GANADA'}
+                </span>
+              </div>
+              <h2 class="text-xs font-semibold text-slate-100 line-clamp-2 leading-snug">${item.title}</h2>
+              <div class="mt-2 flex items-baseline justify-between">
+                <div>
+                  <span class="text-[10px] text-slate-400 block">Tu precio</span>
+                  <span class="text-sm font-bold text-white">${formatPrice(item.myPrice)}</span>
+                </div>
+                ${isLost ? `
+                  <div class="text-right">
+                    <span class="text-[10px] text-red-400 block">Competidor a</span>
+                    <span class="text-sm font-black text-red-400">${formatPrice(item.winnerPrice)}</span>
+                  </div>
+                ` : `
+                  <div class="text-right">
+                    <span class="text-[10px] text-emerald-400 block">Estado</span>
+                    <span class="text-xs font-bold text-emerald-400">1ª opción</span>
+                  </div>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // Arranca automático al abrir
+    fetchData();
+  </script>
+</body>
+</html>
