@@ -70,8 +70,17 @@
     let currentFilter = 'lost';
     let productsData = [];
     const NICKNAME = 'LGMIMPORT';
+    const PROXY = 'https://api.allorigins.win/raw?url=';
     
     const formatPrice = (val) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(val);
+
+    // Función puente para saltar el bloqueo CORS del navegador
+    async function fetchML(url) {
+      const cacheBusterUrl = url + (url.includes('?') ? '&' : '?') + 't=' + new Date().getTime();
+      const res = await fetch(PROXY + encodeURIComponent(cacheBusterUrl));
+      if (!res.ok) throw new Error('Error al conectar con ML');
+      return res.json();
+    }
 
     async function fetchData() {
       const syncLabel = document.getElementById('sync-label');
@@ -81,14 +90,11 @@
       productsData = []; 
       
       try {
-        // 1. Obtener Seller ID
-        let res = await fetch(`https://api.mercadolibre.com/sites/MLA/search?nickname=${NICKNAME}`);
-        let data = await res.json();
+        let data = await fetchML(`https://api.mercadolibre.com/sites/MLA/search?nickname=${NICKNAME}`);
         let sellerId = data.seller?.id;
 
         if (!sellerId) {
-            let altRes = await fetch(`https://api.mercadolibre.com/sites/MLA/search?q=${NICKNAME}`);
-            let altData = await altRes.json();
+            let altData = await fetchML(`https://api.mercadolibre.com/sites/MLA/search?q=${NICKNAME}`);
             if (altData.results && altData.results.length > 0) {
                 sellerId = altData.results[0].seller?.id;
             }
@@ -96,25 +102,20 @@
 
         if (!sellerId) throw new Error("No se encontró el vendedor");
 
-        // 2. Traer publicaciones
-        let itemsRes = await fetch(`https://api.mercadolibre.com/sites/MLA/search?seller_id=${sellerId}&limit=50`);
-        let itemsData = await itemsRes.json();
-        
+        let itemsData = await fetchML(`https://api.mercadolibre.com/sites/MLA/search?seller_id=${sellerId}&limit=50`);
         let items = itemsData.results || [];
         let catalogItems = items.filter(i => i.catalog_listing || i.catalog_product_id);
 
         syncLabel.innerText = "Analizando precios...";
 
-        // 3. Revisar Buy Box
         for (let item of catalogItems) {
             let status = 'won';
             let winnerPrice = item.price;
             let winnerName = 'Vos';
             
             if (item.catalog_product_id) {
-                let catRes = await fetch(`https://api.mercadolibre.com/products/${item.catalog_product_id}`);
-                if (catRes.ok) {
-                    let catData = await catRes.json();
+                try {
+                    let catData = await fetchML(`https://api.mercadolibre.com/products/${item.catalog_product_id}`);
                     let buyBox = catData.buy_box_winner;
                     if (buyBox) {
                         let winnerSellerId = buyBox.seller_id;
@@ -125,6 +126,8 @@
                             winnerName = 'Competidor';
                         }
                     }
+                } catch(e) {
+                    console.warn("Fallo un producto:", item.title);
                 }
             }
 
@@ -237,7 +240,6 @@
       });
     }
 
-    // Arranca automático al abrir
     fetchData();
   </script>
 </body>
