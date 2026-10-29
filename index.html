@@ -70,23 +70,30 @@
     let currentFilter = 'lost';
     let productsData = [];
     const NICKNAME = 'LGMIMPORT';
-    const PROXY = 'https://api.allorigins.win/raw?url=';
     
     const formatPrice = (val) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(val);
 
-    // Función puente para saltar el bloqueo CORS del navegador
+    // Función puente 100% inmune a CORS
     async function fetchML(url) {
-      const cacheBusterUrl = url + (url.includes('?') ? '&' : '?') + 't=' + new Date().getTime();
-      const res = await fetch(PROXY + encodeURIComponent(cacheBusterUrl));
-      if (!res.ok) throw new Error('Error al conectar con ML');
-      return res.json();
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+      const res = await fetch(proxyUrl);
+      if (!res.ok) throw new Error("El proxy no responde");
+      
+      const data = await res.json();
+      if (!data.contents) throw new Error("Respuesta vacía de ML");
+      
+      try {
+        return JSON.parse(data.contents);
+      } catch (e) {
+        throw new Error("ML bloqueó la consulta");
+      }
     }
 
     async function fetchData() {
       const syncLabel = document.getElementById('sync-label');
       const spinner = document.getElementById('refresh-spinner');
       spinner.classList.add('animate-spin');
-      syncLabel.innerText = "Consultando ML...";
+      syncLabel.innerText = "Buscando ID...";
       productsData = []; 
       
       try {
@@ -100,13 +107,14 @@
             }
         }
 
-        if (!sellerId) throw new Error("No se encontró el vendedor");
+        if (!sellerId) throw new Error("ID de vendedor no encontrado");
 
+        syncLabel.innerText = "Descargando listado...";
         let itemsData = await fetchML(`https://api.mercadolibre.com/sites/MLA/search?seller_id=${sellerId}&limit=50`);
         let items = itemsData.results || [];
         let catalogItems = items.filter(i => i.catalog_listing || i.catalog_product_id);
 
-        syncLabel.innerText = "Analizando precios...";
+        syncLabel.innerText = "Analizando competencia...";
 
         for (let item of catalogItems) {
             let status = 'won';
@@ -147,7 +155,8 @@
         
       } catch (e) {
         console.error(e);
-        syncLabel.innerText = "Error de conexión";
+        // Ahora sí te va a decir exactamente por qué falló
+        syncLabel.innerText = "Error: " + e.message;
       } finally {
         spinner.classList.remove('animate-spin');
         updateCounters();
